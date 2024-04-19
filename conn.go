@@ -19,6 +19,16 @@ func readBlock(n *net.Conn) (string, error) {
 	return string(buff[:bytesRead]), nil
 }
 
+var connectionChan = []net.Conn{}
+
+func appendVal(message string) {
+	for _, c := range connectionChan {
+		if err := writeToConnection(&c, message); err != nil {
+			log.Fatal(err)
+		}
+	}
+}
+
 func writeToConnection(n *net.Conn, message string) error {
 	_, err := (*n).Write([]byte(message))
 	if err != nil {
@@ -35,7 +45,6 @@ func TCPActiveListener() {
 	fmt.Println("Listening to port 6060")
 
 	// create a channel of connections
-	var connectionChan = []net.Conn{}
 
 	for {
 
@@ -67,24 +76,30 @@ func TCPActiveListener() {
 
 				if err != nil {
 					conn.Close()
+					// remove conn from the connectionChanl where
+					// conn == conn
+
+					// remove the connection from the channel
+					//
+					for i, c := range connectionChan {
+						if c == conn {
+							connectionChan = append(connectionChan[:i], connectionChan[i+1:]...)
+						}
+					}
 
 					log.Printf("[%s] DISCONNECT", conn.RemoteAddr())
 					break
 				}
 
-				log.Printf("[%s]: %s", conn.LocalAddr().String(), connResp)
+				// log.Printf("[%s]: %s", conn.LocalAddr().String(), connResp)
 
 				// if err = writeToConnection(conn, connRespTrim); err != nil {
 				// 	log.Fatal(err)
 				// }
 				// iterate througgh connnections and wtite to them
 
-				for _, c := range connectionChan {
-					fmt.Println("Writing to conncetion: ", c)
-					if err = writeToConnection(&c, connResp); err != nil {
-						log.Fatal(err)
-					}
-				}
+				snapData(connResp, &conn)
+
 			}
 
 		}()
