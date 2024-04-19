@@ -1,16 +1,13 @@
 package main
 
 import (
-	"fmt"
 	"log"
-	"net"
 	"os"
-	"strings"
 )
 
 type store struct {
 	// store the data of the file as bytes
-	data []byte
+	content []byte
 }
 
 func (s *store) loadData() {
@@ -19,13 +16,23 @@ func (s *store) loadData() {
 		log.Fatal(err)
 	}
 
-	_, err = datafile.Read(s.data)
+	_, err = datafile.Read(s.content)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 }
 
+func (s *store) PersistData() {
+	datafile, err := os.Create("data/data.txt")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	_, err = datafile.Write(s.content)
+}
+
+/*
 func snapData(operation string, n *net.Conn) {
 	// TODO:
 	// ex: LOG "text"
@@ -33,6 +40,7 @@ func snapData(operation string, n *net.Conn) {
 	operations := strings.Split(operation, " ")
 
 	if operations[0] == "LOG" {
+		// appendVal(operations[1])
 		appendVal(operations[1])
 	} else {
 		// host name of connection
@@ -40,3 +48,4 @@ func snapData(operation string, n *net.Conn) {
 		appendVal(fmt.Sprintf("[%s]: Invalid operation %s", hostname, operations[0]))
 	}
 }
+ */
