@@ -2,21 +2,20 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
-	"io"
 	"log"
 	"net"
-	"time"
+	"sync"
 )
 
 type command struct {
+	lamportCounter int
 	opcode int
 	key string
 	val int
 }
 
 type LamportClock struct {
-	counter int
+	Counter int
 	mutex sync.Mutex
 }
 
@@ -40,11 +39,16 @@ type Node struct {
 
 type TCPPayload struct {
 	// 0 -> new connection into data pool
-	// 1 -> sending the latest clinet list
+	// 1 -> sending the latest client list
 	// 		to a node in the pool
 	// 2 -> broadcast command
 	header int
-	DataNode Node
+	// DataNode Node
+	LamportClockCounter int
+	HeadCommand command
+	NeckCommand command
+	Data store
+	ClientList []net.Conn
 }
 
 
@@ -52,8 +56,11 @@ type TCPPayload struct {
 func (n *Node) initNode() {
 	// we need to have the client have an empty list
 	n.clientList = []net.Conn{}
+	// initilising commands to nil
+	n.LamportClock.Counter = 0
+	n.headCommand = command{lamportCounter: n.LamportClock.Counter}
+	n.neckCommand = command{lamportCounter: n.LamportClock.Counter}
 	n.data.loadData()
-	LamportClock.counter = 0
 }
 
 // TODO: establish connection with "SOME" node in network
@@ -78,13 +85,15 @@ func (n *Node) EstablishConnection(connectionAddr string) {
 
 	emptyPayload := TCPPayload {
 		header: 0,
-		DataNode: Node {
-			clientList: []net.Conn{},
-		},
+		ClientList: n.clientList,
 	}
 
-	marshNodeData := marshalData(emptyPayload)
-	err = conn.Write(marshNodeData)
+	// marshNodeData := marshalData(emptyPayload)
+	marshalData, err := json.Marshal(emptyPayload)
+	if err != nil {
+		log.Fatal(err)
+	}
+	_, err = conn.Write(marshalData)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -118,13 +127,12 @@ func (n *Node) EstablishConnection(connectionAddr string) {
 
 	// marshal the node data
 
-	begPayload := TCPPayload {
-		header: 0,
-		DataNode: Node{
-			clientList: n.clientList,
-		},
+	shareLatestClients := TCPPayload {
+		header: 1,
+		ClientList: n.clientList,
 	}
-	marshData, err := json.Marshal(begPayload)
+
+	marshData, err := json.Marshal(shareLatestClients)
 
 	for _, node := range n.clientList {
 		// establish connection with all nodes in client client list
@@ -139,38 +147,33 @@ func (n *Node) EstablishConnection(connectionAddr string) {
 
 // TODO: Broadcast commands
 
-func (n *Node) BroadcastCommand (, connection *net.Conn)
+func (n *Node) BroadcastCommand (headCommand command, neckCommand command, connection *net.Conn) {
+	n.headCommand = headCommand
+	n.neckCommand = neckCommand
+
+	payload := TCPPayload {
+		header: 2,
+		HeadCommand: n.headCommand,
+		NeckCommand: n.neckCommand,
+		LamportClockCounter: n.LamportClock.Counter,
+	}
+	bytesMarshalData := marshalData(payload)
+
+	for _ = range n.clientList {
+		n.writeMarshalData(bytesMarshalData, connection)
+	}
+}
 
 func (n *Node) HandlePayload(payload TCPPayload, connection *net.Conn) {
 	switch payload.header {
 		case 0: // when we are dealing with a new connection
 				// into the data pool
-			// n.clientList = append(n, payload.DataNode.clientList)
-
-			clinetPayload := TCPPayload {
-				DataNode: Node {
-					clientList: n.clientList,
-					data: n.data,
-					LamportClock: n.LamportClock,
-				},
-			}
-
-			marshalData, err := json.Marshal(clinetPayload)
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			n.writeMarshalData(marshalData, connection)
-
-		case 1:
-			// when we are pinging all other nodes in a server after recieving
-			// a client list from initial node, we need to send them the updated
-			// client list
+				// n.clientList = append(n, payload.DataNode.clientList)
 
 			clientPayload := TCPPayload {
-				DataNode: Node {
-					clientList: n.clientList,
-				},
+				ClientList: n.clientList,
+				Data: n.data,
+				LamportClockCounter: n.LamportClock.Counter,
 			}
 
 			marshalData, err := json.Marshal(clientPayload)
@@ -180,69 +183,59 @@ func (n *Node) HandlePayload(payload TCPPayload, connection *net.Conn) {
 
 			n.writeMarshalData(marshalData, connection)
 
+		case 1:
+			// the client has sent the updated clinet list over the conn
+			// in the payload. We update the current node client list with
+			// this sent over data
+			n.clientList = payload.ClientList
+
 		case 2: // handle broadcast command
-			fmt.Print("TODO: Handle broadcast command")
-
-			for _, node := range n.clientList {
-				if node != *connection {
-
-				}
+			n.LamportClock.mutex.Lock()
+			if payload.LamportClockCounter > n.LamportClock.Counter {
+				n.LamportClock.Counter = payload.LamportClockCounter
 			}
+			n.LamportClock.Counter++
+			n.LamportClock.mutex.Unlock()
+
+			// if payload.HeadCommand
+
 
 	}
 }
 
-func (n * Node) HandleServerConnection (connection *net.Conn, buffer string, clientList []net.Conn) {
-	if len(clientList) == 0 {
-		n.writeData(2, connection)
-		return
+func (lc *LamportClock) compareClocks(revievedClock int) {
+	lc.mutex.Lock()
+	if revievedClock > lc.Counter {
+		lc.Counter = revievedClock
 	}
-	var dataRecieved []byte
-	_, err := (*connection).Read(dataRecieved)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	var nodeRecieved Node
-	err = json.Unmarshal(dataRecieved, &nodeRecieved)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// NOTE: As the connection we read from already has a clinet list,
-	// we only need to update the "current" node with the new list
-	n.clientList = nodeRecieved.clientList
-
+	lc.Counter++
+	lc.mutex.Unlock()
 }
 
+
+// quick function to write marshaled data to a conn
 func (n *Node)writeMarshalData (bytesMarshalData []byte, connection *net.Conn) {
-	_, err = (*connection).Write(bytesMarshalData)
+	_, err := (*connection).Write(bytesMarshalData)
 	if err != nil {
 		log.Fatal(err);
 	}
 }
 
-func readBlock(n *net.Conn) (string, error) {
-	// fireing a blocking operation
-	var buff []byte = make([]byte, 512)
-	bytesRead, err := (*n).Read(buff)
-	if err != nil {
-		return "", err
-	}
+// func readBlock(n *net.Conn) (string, error) {
+// 	// fireing a blocking operation
+// 	var buff []byte = make([]byte, 512)
+// 	bytesRead, err := (*n).Read(buff)
+// 	if err != nil {
+// 		return "", err
+// 	}
 
-	return string(buff[:bytesRead]), nil
-}
+// 	return string(buff[:bytesRead]), nil
+// }
 
-var connectionChan = []net.Conn{}
+// var connectionChan = []net.Conn{}
 
-func appendVal(message string) {
-	for _, c := range connectionChan {
-		if err := writeToConnection(&c, message); err != nil {
-			log.Fatal(err)
-		}
-	}
-}
 
+// DEBUG FUNCTION
 func writeToConnection(n *net.Conn, message string) error {
 	_, err := (*n).Write([]byte(message))
 	if err != nil {
@@ -251,7 +244,7 @@ func writeToConnection(n *net.Conn, message string) error {
 	return nil
 }
 
-func marshalData (payload struct, connection *net.Conn) []byte {
+func marshalData (payload TCPPayload) []byte {
 	marshaledData, err := json.Marshal(payload)
 	if err != nil {
 		log.Fatal(err)
@@ -262,75 +255,88 @@ func marshalData (payload struct, connection *net.Conn) []byte {
 	return byteMarshledData
 }
 
-func TCPActiveListener() {
-	tcp, err := net.Listen("tcp", ":6060")
-	if err != nil {
-		log.Fatal("Failed to start the tcp listener")
-	}
-	fmt.Println("Listening to port 6060")
+// func TCActiveListener (connection *net.Conn) {
+// 	tcp, err := net.Listen("tcp", ":6060")
+// 	if (err != nil) {
+// 		log.Fatal("TCP Error")
+// 	}
 
-	// create a channel of connections
+// 	for {
 
-	for {
+// 		}
+// 	}
+// }
 
-		// creating threads, handling connections in separate
-		// thread
+// func TCPActiveListener() {
+// 	tcp, err := net.Listen("tcp", ":6060")
+// 	if err != nil {
+// 		log.Fatal("Failed to start the tcp listener")
+// 	}
+// 	fmt.Println("Listening to port 6060")
 
-		go func() {
+// 	// create a channel of connections
 
-			conn, err := tcp.Accept()
-			if err != nil {
-				log.Fatal(err)
-			}
-			connectionChan = append(connectionChan, conn)
-			for _, c := range connectionChan {
-				fmt.Println("connection: ", c)
-			}
-			for {
-				// _ = append(connectionChan, conn)
-				// append to the channel
+// 	for {
 
-				log.Println("appended to channel")
+// 		// creating threads, handling connections in separate
+// 		// thread
 
-				connResp, err := readBlock(&conn)
-				//connRespTrim := strings.Trim(connResp, "\n")
+// 		go func() {
 
-				if err == io.EOF {
-					log.Printf("[%s] DISCONNECT {EOF}", conn.RemoteAddr())
-				}
+// 			conn, err := tcp.Accept()
+// 			if err != nil {
+// 				log.Fatal(err)
+// 			}
+// 			connectionChan = append(connectionChan, conn)
+// 			for _, c := range connectionChan {
+// 				fmt.Println("connection: ", c)
+// 			}
+// 			for {
+// 				// _ = append(connectionChan, conn)
+// 				// append to the channel
 
-				if err != nil {
-					conn.Close()
-					// remove conn from the connectionChanl where
-					// conn == conn
+// 				log.Println("appended to channel")
 
-					// remove the connection from the channel
-					//
-					for i, c := range connectionChan {
-						if c == conn {
-							connectionChan = append(connectionChan[:i], connectionChan[i+1:]...)
-						}
-					}
+// 				connResp, err := readBlock(&conn)
+// 				//connRespTrim := strings.Trim(connResp, "\n")
 
-					log.Printf("[%s] DISCONNECT", conn.RemoteAddr())
-					break
-				}
+// 				if err == io.EOF {
+// 					log.Printf("[%s] DISCONNECT {EOF}", conn.RemoteAddr())
+// 				}
 
-				// log.Printf("[%s]: %s", conn.LocalAddr().String(), connResp)
+// 				if err != nil {
+// 					conn.Close()
+// 					// remove conn from the connectionChanl where
+// 					// conn == conn
 
-				// if err = writeToConnection(conn, connRespTrim); err != nil {
-				// 	log.Fatal(err)
-				// }
-				// iterate througgh connnections and wtite to them
+// 					// remove the connection from the channel
+// 					//
+// 					for i, c := range connectionChan {
+// 						if c == conn {
+// 							connectionChan = append(connectionChan[:i], connectionChan[i+1:]...)
+// 						}
+// 					}
 
-				snapData(connResp, &conn)
+// 					log.Printf("[%s] DISCONNECT", conn.RemoteAddr())
+// 					break
+// 				}
 
-			}
+// 				// log.Printf("[%s]: %s", conn.LocalAddr().String(), connResp)
 
-		}()
+// 				// if err = writeToConnection(conn, connRespTrim); err != nil {
+// 				// 	log.Fatal(err)
+// 				// }
+// 				// iterate througgh connnections and wtite to them
 
-		time.Sleep(5 * time.Second)
 
-	}
+// 				snapData(connResp, &conn)
 
-}
+// 			}
+
+// 		}()
+
+// 		time.Sleep(5 * time.Second)
+
+// 	}
+
+// }

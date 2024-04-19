@@ -1,11 +1,16 @@
 package main
 
-import ()
 
 func main() {
 
-	testStore := store{}
-	testStore.loadData()
+	// testStore := store{}
+	// testStore.loadData()
 
-	TCPActiveListener()
+	// creating a node instance
+
+	// node := Node{
+	// 	clientList: []net.Conn{},
+	// }
+
+	// TCPActiveListener()
 }
