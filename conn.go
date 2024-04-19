@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"log"
 	"net"
 	"sync"
+	"time"
 )
 
 type command struct {
@@ -17,6 +19,12 @@ type command struct {
 type LamportClock struct {
 	Counter int
 	mutex sync.Mutex
+}
+
+func (lc *LamportClock) incrementClock() {
+	lc.mutex.Lock()
+	lc.Counter++
+	lc.mutex.Unlock()
 }
 
 type Node struct {
@@ -147,9 +155,9 @@ func (n *Node) EstablishConnection(connectionAddr string) {
 
 // TODO: Broadcast commands
 
-func (n *Node) BroadcastCommand (headCommand command, neckCommand command, connection *net.Conn) {
-	n.headCommand = headCommand
-	n.neckCommand = neckCommand
+func (n *Node) BroadcastCommand () {
+	// n.neckCommand = n.headCommand
+	// n.headCommand = headCommand
 
 	payload := TCPPayload {
 		header: 2,
@@ -159,8 +167,8 @@ func (n *Node) BroadcastCommand (headCommand command, neckCommand command, conne
 	}
 	bytesMarshalData := marshalData(payload)
 
-	for _ = range n.clientList {
-		n.writeMarshalData(bytesMarshalData, connection)
+	for _, conn := range n.clientList {
+		n.writeMarshalData(bytesMarshalData, &conn)
 	}
 }
 
@@ -253,6 +261,47 @@ func marshalData (payload TCPPayload) []byte {
 	byteMarshledData := []byte(marshaledData)
 
 	return byteMarshledData
+}
+
+
+func startLocalListener(node *Node) {
+	tcp, err := net.Listen("tcp", ":8080")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	defer tcp.Close()
+
+	go func() {
+		conn, err := tcp.Accept()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		for {
+			var dataRecieved []byte
+			_, err = conn.Read(dataRecieved)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			// dataRecieved -> unmarshal to payload struct
+			var payload TCPPayload
+			err = json.Unmarshal(dataRecieved, &payload)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			if err == io.EOF {
+				log.Printf("[%s] DISCONNECTED", conn.RemoteAddr().String())
+				break
+			}
+
+			// now we handle the payload
+			(*node).HandlePayload(payload, &conn)
+		}
+	}()
+	time.Sleep(5 * time.Second)
 }
 
 // func TCActiveListener (connection *net.Conn) {
